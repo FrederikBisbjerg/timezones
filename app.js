@@ -102,7 +102,13 @@ function dayPart(date, zone) {
   if ((h >= 7 && h < 9) || (h >= 18 && h < 22)) return "edge";
   return "night";
 }
-const DAY_PART_LABEL = { work: "working hours", edge: "early or late", night: "night" };
+const DAY_PART_LABEL = { work: "daytime, working hours", edge: "early morning or evening", night: "night" };
+// Sun = working hours, sun on the horizon = early or late, moon = night.
+const DAY_PART_ICON = {
+  work: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.6" fill="currentColor"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>',
+  edge: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.8 16.5a5.2 5.2 0 0 1 10.4 0z" fill="currentColor"/><path d="M3 20h18M12 5v3M3.6 16.5h1.6M18.8 16.5h1.6M6 9.6l1.8 1.8M18 9.6l-1.8 1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>',
+  night: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.6 8.6 0 0 1 9.8 3.5a8.6 8.6 0 1 0 10.7 10.7z" fill="currentColor"/></svg>',
+};
 
 // ---------- Catalogue and search ----------
 
@@ -273,7 +279,6 @@ function render() {
     </div>
 
     <button class="share" data-act="share">Share these times</button>
-    <div class="legend"><span><i class="part work"></i>Working hours</span><span><i class="part edge"></i>Early or late</span><span><i class="part night"></i>Night</span></div>
     <div class="foot">${state.places.length ? "Swipe a city left to move or remove it. " : ""}<button class="link" data-act="clock">${h24 ? "Use 12-hour time" : "Use 24-hour time"}</button></div>`;
 
   if (!isStandalone() && !state.hintDismissed) {
@@ -326,6 +331,7 @@ function update(fromSlider = false) {
     day.classList.toggle("shift", n !== 0);
     const part = dayPart(t, r.zone);
     const dot = $(".part", el);
+    if (dot.dataset.part !== part) { dot.dataset.part = part; dot.innerHTML = DAY_PART_ICON[part]; }
     dot.className = "part " + part;
     dot.setAttribute("aria-label", DAY_PART_LABEL[part]);
     dot.title = DAY_PART_LABEL[part];

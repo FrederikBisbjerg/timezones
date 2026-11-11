@@ -18,7 +18,7 @@
 :root {
   --bg: #f2f2f7; --card: #ffffff; --text: #000000; --muted: #6d6d72; --line: #e3e3e8;
   --accent: #007aff; --orange: #d9650a; --red: #ff3b30; --field: #e9e9ee; --shade: rgba(0,0,0,.35);
-  --green: #1e9e4a; --amber: #e8a100; --night: #7b7f9e; --anchor: #eaf2ff;
+  --green: #1e9e4a; --sun: #f0a400; --dusk: #e07b39; --night: #6b70a8; --anchor: #eaf2ff;
   --daybar: linear-gradient(90deg, #27305e 0%, #27305e 20%, #f0a35a 29%, #ffd76a 38%, #ffe58a 50%, #ffd76a 66%, #f0a35a 77%, #27305e 90%, #27305e 100%);
   color-scheme: light dark;
 }
@@ -26,7 +26,7 @@
   :root {
     --bg: #000000; --card: #1c1c1e; --text: #ffffff; --muted: #98989f; --line: #38383a;
     --accent: #0a84ff; --orange: #ff9f0a; --red: #ff453a; --field: #2c2c2e; --shade: rgba(0,0,0,.6);
-    --green: #30d158; --amber: #ffb340; --night: #6f7396; --anchor: #14233b;
+    --green: #30d158; --sun: #ffd24a; --dusk: #ff9a5c; --night: #9aa0d6; --anchor: #14233b;
   }
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -88,10 +88,11 @@ h1 { font-size: 24px; font-weight: 700; margin: 2px 4px 8px; letter-spacing: -.3
 }
 .zone .day { color: var(--muted); font-size: 13px; margin-top: 1px; }
 .zone .day.shift { color: var(--orange); }
-.part { width: 9px; height: 9px; border-radius: 5px; flex: none; display: inline-block; }
-.part.work { background: var(--green); }
-.part.edge { background: var(--amber); }
-.part.night { background: var(--night); }
+.part { width: 20px; height: 20px; flex: none; display: inline-flex; }
+.part svg { width: 100%; height: 100%; }
+.part.work { color: var(--sun); }
+.part.edge { color: var(--dusk); }
+.part.night { color: var(--night); }
 .actions { position: absolute; top: 0; right: 0; bottom: 0; width: 176px; display: flex; visibility: hidden; }
 .swipe.open .actions, .swipe.dragging .actions { visibility: visible; }
 .act { flex: 1; border: 0; background: var(--field); font-size: 15px; padding: 0; }
@@ -103,8 +104,6 @@ h1 { font-size: 24px; font-weight: 700; margin: 2px 4px 8px; letter-spacing: -.3
   display: inline-flex; align-items: center; justify-content: center; font-weight: 700; flex: none; }
 
 .share { display: block; width: 100%; border: 0; background: var(--accent); color: #fff; height: 46px; border-radius: 23px; font-weight: 600; margin-top: 12px; }
-.legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 14px; color: var(--muted); font-size: 12px; margin: 12px 8px 0; }
-.legend span { display: inline-flex; align-items: center; gap: 5px; }
 .foot { color: var(--muted); font-size: 13px; text-align: center; margin: 8px 8px 0; }
 .foot .link { font-size: 13px; }
 .hint { background: var(--card); border-radius: 16px; padding: 10px 12px; margin-top: 14px; font-size: 14px;
