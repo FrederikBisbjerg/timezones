@@ -73,17 +73,36 @@ function isValidZone(zone) {
   try { new Intl.DateTimeFormat("en-US", { timeZone: zone }); return true; } catch { return false; }
 }
 
-const timeFormatters = new Map(), dayFormatters = new Map();
-function timeText(date, zone) {
-  let f = timeFormatters.get(zone);
-  if (!f) { f = new Intl.DateTimeFormat(undefined, { timeZone: zone, hour: "numeric", minute: "2-digit" }); timeFormatters.set(zone, f); }
-  return f.format(date);
+const textFormatters = new Map();
+function formatter(kind, zone, options) {
+  const key = kind + "|" + zone;
+  let f = textFormatters.get(key);
+  if (!f) { f = new Intl.DateTimeFormat(undefined, { timeZone: zone, ...options }); textFormatters.set(key, f); }
+  return f;
+}
+/** "4:00 PM" or "16:00", following the 12/24-hour setting ("auto" uses the device's own). */
+function timeText(date, zone, clock = "auto") {
+  const options = clock === "24" ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }
+    : clock === "12" ? { hour: "numeric", minute: "2-digit", hour12: true }
+    : { hour: "numeric", minute: "2-digit" };
+  return formatter("time" + clock, zone, options).format(date);
 }
 function dayText(date, zone) {
-  let f = dayFormatters.get(zone);
-  if (!f) { f = new Intl.DateTimeFormat(undefined, { timeZone: zone, weekday: "short", day: "numeric", month: "short" }); dayFormatters.set(zone, f); }
-  return f.format(date);
+  return formatter("day", zone, { weekday: "short", day: "numeric", month: "short" }).format(date);
 }
+/** Whether the device's own format is 24-hour. */
+function deviceUses24h() {
+  return !/[AP]M/i.test(new Intl.DateTimeFormat(undefined, { hour: "numeric" }).format(new Date(2020, 0, 1, 15)));
+}
+
+/** "work" 09:00-17:59, "edge" 07:00-08:59 and 18:00-21:59, otherwise "night". */
+function dayPart(date, zone) {
+  const h = partsIn(date, zone).h;
+  if (h >= 9 && h < 18) return "work";
+  if ((h >= 7 && h < 9) || (h >= 18 && h < 22)) return "edge";
+  return "night";
+}
+const DAY_PART_LABEL = { work: "working hours", edge: "early or late", night: "night" };
 
 // ---------- Catalogue and search ----------
 
@@ -137,8 +156,10 @@ function search(raw) {
 // ---------- State ----------
 
 const STORE_KEY = "timezones.places.v1";
+const CLOCK_KEY = "timezones.clock.v1";
 const LOCAL = "local";
 const DEFAULTS = ["Europe/Copenhagen", "Europe/London", "America/New_York", "Asia/Dubai", "Asia/Singapore"];
+const STEP = 15; // slider step, minutes
 
 function localZone() { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; }
 function sameZone(a, b) { return (ZONE_ALIASES[a] || a) === (ZONE_ALIASES[b] || b); }
@@ -152,44 +173,50 @@ function loadPlaces() {
   } catch { /* fall through to defaults */ }
   return DEFAULTS.filter((id) => !sameZone(id, localZone())).map((id) => ({ name: cityName(id), zoneID: id }));
 }
-function savePlaces() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state.places)); } catch { /* private mode */ }
+function save(key, value) { try { localStorage.setItem(key, value); } catch { /* private mode */ } }
+function savePlaces() { save(STORE_KEY, JSON.stringify(state.places)); }
+function loadClock() {
+  let v = null;
+  try { v = localStorage.getItem(CLOCK_KEY); } catch { /* ignore */ }
+  return v === "12" || v === "24" ? v : "auto";
 }
 
 const placeId = (p) => p.name + "|" + p.zoneID;
-const nowWall = () => instantToWall(new Date(), localZone());
 
 const state = {
   places: loadPlaces(),
-  mode: "now",          // "now" | "custom"
-  wall: nowWall(),      // the clock time the user entered
-  sourceKey: LOCAL,     // which place that clock time belongs to
-  hasPicked: false,
+  live: true,           // following the real clock
+  instant: Date.now(),  // the chosen moment, used when not live
+  anchorKey: LOCAL,     // the row whose clock the slider and date move
+  clock: loadClock(),   // "auto" | "12" | "24"
   editing: false,
   hintDismissed: false,
 };
 
-function sourcePlace() { return state.places.find((p) => placeId(p) === state.sourceKey); }
-function sourceZone() { const p = state.mode === "custom" && sourcePlace(); return p ? p.zoneID : localZone(); }
-function sourceName() { const p = state.mode === "custom" && sourcePlace(); return p ? p.name : cityName(localZone()); }
-function currentInstant() { return state.mode === "now" ? new Date() : wallToInstant(state.wall, sourceZone()); }
+/** Every row on screen: the device's own zone first, then the saved places. */
+function allRows() {
+  const local = localZone();
+  return [{ key: LOCAL, name: cityName(local), zone: local, mine: true },
+    ...state.places.map((p) => ({ key: placeId(p), name: p.name, zone: p.zoneID, mine: false }))];
+}
+function anchorRow() { const rows = allRows(); return rows.find((r) => r.key === state.anchorKey) || rows[0]; }
+function currentInstant() { return state.live ? new Date() : new Date(state.instant); }
+function uses24h() { return state.clock === "24" || (state.clock === "auto" && deviceUses24h()); }
+
+/** Choose a moment by the clock reading in one zone. */
+function setWall(wall, zone) {
+  state.instant = wallToInstant(wall, zone).getTime();
+  state.live = false;
+}
 
 // ---------- Rendering ----------
+// render() rebuilds the page when its structure changes (rows added, edit mode).
+// update() only refreshes the numbers, so dragging the slider or typing a time
+// never replaces the control being used.
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const app = document.getElementById("app");
-
-function zoneRow(name, zone, instant, isSource, extra = "") {
-  const src = sourceZone();
-  const gmt = gmtLabel(instant, zone);
-  const sub = isSource ? gmt : `${gmt} · ${differenceLabel(instant, zone, src, sourceName())}`;
-  const n = dayOffset(instant, zone, src);
-  const day = dayText(instant, zone) + (n === 0 ? "" : ` (${n > 0 ? "+" : "−"}${Math.abs(n)} day${Math.abs(n) === 1 ? "" : "s"})`);
-  return `<div class="row zone">${extra}
-    <div class="grow"><div class="name">${esc(name)}</div><div class="sub">${esc(sub)}</div></div>
-    <div class="right"><div class="time">${esc(timeText(instant, zone))}</div>
-    <div class="day${n === 0 ? "" : " shift"}">${esc(day)}</div></div></div>`;
-}
+const $ = (sel, root = document) => root.querySelector(sel);
 
 function isStandalone() {
   return window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
@@ -198,63 +225,177 @@ function isIOS() {
   return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
+function rowHTML(r, index) {
+  const editing = state.editing && !r.mine;
+  const i = index - 1; // index into state.places
+  const isAnchor = r.key === anchorRow().key;
+  const time = isAnchor
+    ? `<input class="time timein" type="time" step="60" aria-label="Time in ${esc(r.name)}">`
+    : `<button class="time" data-act="settime" aria-label="Set the time in ${esc(r.name)}"></button>`;
+  return `<div class="row zone${isAnchor ? " anchor" : ""}" data-key="${esc(r.key)}" data-act="anchor">
+    ${editing ? `<button class="del" data-act="delete" data-i="${i}" aria-label="Remove ${esc(r.name)}">−</button>` : ""}
+    <span class="part" role="img"></span>
+    <div class="grow"><div class="name">${esc(r.name)}</div><div class="sub"></div></div>
+    <div class="right">${time}<div class="day"></div></div>
+    ${editing ? `<div class="move">
+      <button data-act="up" data-i="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(r.name)} up">▲</button>
+      <button data-act="down" data-i="${i}" ${i === state.places.length - 1 ? "disabled" : ""} aria-label="Move ${esc(r.name)} down">▼</button>
+    </div>` : ""}
+  </div>`;
+}
+
 function render() {
-  const instant = currentInstant();
-  const local = localZone();
-  const custom = state.mode === "custom";
+  const rows = allRows();
+  if (!rows.some((r) => r.key === state.anchorKey)) state.anchorKey = LOCAL;
   const editing = state.editing && state.places.length > 0;
+  const h24 = uses24h();
+  const ticks = h24 ? ["00", "06", "12", "18", "24"] : ["12 AM", "6 AM", "12 PM", "6 PM", "12 AM"];
+
   let html = `<div class="bar">
       ${state.places.length ? `<button class="pill${editing ? " done" : ""}" data-act="edit">${editing ? "Done" : "Edit"}</button>` : "<span></span>"}
       <button class="pill icon" data-act="add" aria-label="Add time zone or city">+</button>
     </div>
     <h1>Time Zones</h1>
-    <div class="seg">
-      <button data-act="mode" data-mode="now" aria-pressed="${!custom}">Now</button>
-      <button data-act="mode" data-mode="custom" aria-pressed="${custom}">Pick a time</button>
-    </div>`;
 
-  if (custom) {
-    html += `<div class="card">
-      <label class="row"><span class="grow">Time</span>
-        <input class="field" id="wall" type="datetime-local" value="${esc(state.wall)}" required></label>
-      <label class="row"><span class="grow">In time zone</span>
-        <select class="field" id="source">
-          <option value="${LOCAL}"${state.sourceKey === LOCAL ? " selected" : ""}>${esc(cityName(local))} (yours)</option>
-          ${state.places.map((p) => `<option value="${esc(placeId(p))}"${state.sourceKey === placeId(p) ? " selected" : ""}>${esc(p.name)}</option>`).join("")}
-        </select></label>
-      <div class="row"><button class="link" data-act="reset">Reset to current time</button></div>
-    </div>`;
-  }
+    <div class="card picker">
+      <div class="pickhead">
+        <div class="grow"><div class="caption" id="anchorLabel"></div>
+          <div class="datestep">
+            <button class="step" data-act="day" data-d="-1" aria-label="Previous day">‹</button>
+            <button class="date" data-act="date" id="dateLabel" aria-label="Choose a date"></button>
+            <button class="step" data-act="day" data-d="1" aria-label="Next day">›</button>
+            <input type="date" id="dateInput" tabindex="-1" aria-hidden="true">
+          </div>
+        </div>
+        <button class="now" data-act="now" id="nowBtn"></button>
+      </div>
+      <input class="slider" id="slider" type="range" min="0" max="${1440 - STEP}" step="${STEP}" aria-label="Time of day">
+      <div class="ticks">${ticks.map((t) => `<span>${t}</span>`).join("")}</div>
+    </div>
 
-  html += `<div class="label">Your time zone</div><div class="card">
-    ${zoneRow(cityName(local), local, instant, !custom || state.sourceKey === LOCAL)}</div>
-    <div class="label">Other time zones</div><div class="card">`;
-  state.places.forEach((p, i) => {
-    const controls = editing ? `<button class="del" data-act="delete" data-i="${i}" aria-label="Remove ${esc(p.name)}">−</button>` : "";
-    const row = zoneRow(p.name, p.zoneID, instant, custom && state.sourceKey === placeId(p), controls);
-    const move = editing ? `<div class="move">
-        <button data-act="up" data-i="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(p.name)} up">▲</button>
-        <button data-act="down" data-i="${i}" ${i === state.places.length - 1 ? "disabled" : ""} aria-label="Move ${esc(p.name)} down">▼</button>
-      </div>` : "";
-    html += row.replace(/<\/div>$/, move + "</div>");
-  });
-  html += `<button class="row link add" data-act="add" style="width:100%"><span class="plus">+</span>Add time zone or city</button></div>`;
+    <div class="label">Your time zone</div>
+    <div class="card">${rowHTML(rows[0], 0)}</div>
+    <div class="label">Other time zones</div>
+    <div class="card">${rows.slice(1).map((r, n) => rowHTML(r, n + 1)).join("")}
+      <button class="row link add" data-act="add"><span class="plus">+</span>Add time zone or city</button>
+    </div>
+
+    <div class="legend"><span><i class="part work"></i>Working hours</span><span><i class="part edge"></i>Early or late</span><span><i class="part night"></i>Night</span></div>
+
+    <button class="share" data-act="share">Share these times</button>
+    <button class="link small" data-act="clock">${h24 ? "Use 12-hour time" : "Use 24-hour time"}</button>`;
 
   if (!isStandalone() && !state.hintDismissed) {
     const how = isIOS()
-      ? "tap <b>Share</b>, then <b>Add to Home Screen</b>"
+      ? "tap <b>Share</b> in Safari, then <b>Add to Home Screen</b>"
       : "open the browser menu and choose <b>Install</b> or <b>Add to Home screen</b>";
     html += `<div class="hint"><span class="grow">To use this like an app, ${how}.</span>
       <button data-act="hint" aria-label="Dismiss">×</button></div>`;
   }
+  app.classList.toggle("editing", editing);
   app.innerHTML = html;
+  update();
+}
+
+function update(fromSlider = false) {
+  const t = currentInstant();
+  const rows = allRows();
+  const anchor = anchorRow();
+  const local = rows[0];
+  const anchorParts = partsIn(t, anchor.zone);
+
+  $("#anchorLabel").textContent = `Time in ${anchor.name}`;
+  $("#dateLabel").textContent = dayText(t, anchor.zone);
+  $("#dateInput").value = instantToWall(t, anchor.zone).slice(0, 10);
+  const now = $("#nowBtn");
+  now.textContent = state.live ? "● Live" : "Now";
+  now.classList.toggle("live", state.live);
+  now.setAttribute("aria-label", state.live ? "Showing the current time" : "Back to the current time");
+  const slider = $("#slider");
+  if (!fromSlider) slider.value = anchorParts.h * 60 + anchorParts.mi;
+  slider.setAttribute("aria-valuetext", `${timeText(t, anchor.zone, state.clock)} in ${anchor.name}`);
+
+  for (const r of rows) {
+    const el = app.querySelector(`.zone[data-key="${CSS.escape(r.key)}"]`);
+    if (!el) continue;
+    const gmt = gmtLabel(t, r.zone);
+    $(".sub", el).textContent = r.mine ? gmt : `${gmt} · ${differenceLabel(t, r.zone, local.zone, "you")}`;
+    const time = $(".time", el);
+    if (time.tagName === "INPUT") {
+      if (document.activeElement !== time) time.value = instantToWall(t, r.zone).slice(11);
+    } else {
+      time.textContent = timeText(t, r.zone, state.clock);
+    }
+    const n = dayOffset(t, r.zone, anchor.zone);
+    const day = $(".day", el);
+    day.textContent = dayText(t, r.zone) + (n === 0 ? "" : ` ${n > 0 ? "+" : "−"}${Math.abs(n)}d`);
+    day.title = n === 0 ? "" : `${Math.abs(n)} day${Math.abs(n) === 1 ? "" : "s"} ${n > 0 ? "after" : "before"} ${anchor.name}`;
+    day.classList.toggle("shift", n !== 0);
+    const part = dayPart(t, r.zone);
+    const dot = $(".part", el);
+    dot.className = "part " + part;
+    dot.setAttribute("aria-label", DAY_PART_LABEL[part]);
+    dot.title = DAY_PART_LABEL[part];
+  }
 }
 
 // ---------- Actions ----------
 
-function setSource(key) {
-  // The entered clock time is kept; only the zone it belongs to changes.
-  state.sourceKey = key;
+function openPicker(input) {
+  if (!input) return;
+  input.focus();
+  try { if (input.showPicker) input.showPicker(); } catch { /* not allowed here; focus is enough */ }
+}
+
+function setAnchor(key) {
+  if (state.anchorKey === key) return false;
+  state.anchorKey = key;
+  render();
+  return true;
+}
+
+function shiftDay(delta) {
+  const zone = anchorRow().zone;
+  const wall = instantToWall(currentInstant(), zone);
+  const [Y, M, D] = wall.slice(0, 10).split("-").map(Number);
+  const d = new Date(Date.UTC(Y, M - 1, D + delta));
+  setWall(`${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${wall.slice(11)}`, zone);
+  update();
+}
+
+function shareText() {
+  const t = currentInstant();
+  const rows = allRows();
+  const anchor = anchorRow();
+  const ordered = [anchor, ...rows.filter((r) => r.key !== anchor.key)];
+  const lines = ordered.map((r) => {
+    const other = dayOffset(t, r.zone, anchor.zone) !== 0 ? ` (${dayText(t, r.zone)})` : "";
+    return `${timeText(t, r.zone, state.clock)} ${r.name}${other}`;
+  });
+  return `${dayText(t, anchor.zone)}\n${lines.join("\n")}`;
+}
+
+let toastTimer;
+function toast(message) {
+  const el = document.getElementById("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+async function share() {
+  const text = shareText();
+  if (navigator.share && (isIOS() || /Android/.test(navigator.userAgent))) {
+    try { await navigator.share({ text }); } catch { /* cancelled */ }
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("Copied to clipboard");
+  } catch {
+    window.prompt("Copy these times:", text.replace(/\n/g, " · "));
+  }
 }
 
 app.addEventListener("click", (e) => {
@@ -262,14 +403,27 @@ app.addEventListener("click", (e) => {
   if (!el) return;
   const i = Number(el.dataset.i);
   switch (el.dataset.act) {
-    case "mode":
-      state.mode = el.dataset.mode;
-      if (state.mode === "custom" && !state.hasPicked) { state.wall = nowWall(); state.sourceKey = LOCAL; state.hasPicked = true; }
+    case "anchor":
+      if (e.target.closest("input")) return;
+      setAnchor(el.dataset.key);
+      return;
+    case "settime": {
+      const key = el.closest(".zone").dataset.key;
+      setAnchor(key);
+      openPicker(app.querySelector(".zone.anchor .timein"));
+      return;
+    }
+    case "now": state.live = true; update(); return;
+    case "day": shiftDay(Number(el.dataset.d)); return;
+    case "date": openPicker($("#dateInput")); return;
+    case "share": share(); return;
+    case "clock":
+      state.clock = uses24h() ? "12" : "24";
+      save(CLOCK_KEY, state.clock);
       break;
-    case "reset": state.wall = instantToWall(new Date(), sourceZone()); break;
     case "edit": state.editing = !state.editing; break;
     case "delete":
-      if (placeId(state.places[i]) === state.sourceKey) setSource(LOCAL);
+      if (placeId(state.places[i]) === state.anchorKey) state.anchorKey = LOCAL;
       state.places.splice(i, 1); savePlaces();
       if (!state.places.length) state.editing = false;
       break;
@@ -281,19 +435,30 @@ app.addEventListener("click", (e) => {
   render();
 });
 
-app.addEventListener("change", (e) => {
-  if (e.target.id === "wall") {
-    if (e.target.value) state.wall = e.target.value.slice(0, 16);
-    render();
-  } else if (e.target.id === "source") {
-    setSource(e.target.value);
-    render();
+app.addEventListener("input", (e) => {
+  const zone = anchorRow().zone;
+  if (e.target.id === "slider") {
+    const m = Number(e.target.value);
+    const date = instantToWall(currentInstant(), zone).slice(0, 10);
+    setWall(`${date}T${pad(Math.floor(m / 60))}:${pad(m % 60)}`, zone);
+    update(true);
+  } else if (e.target.classList.contains("timein")) {
+    if (!e.target.value) return;
+    const date = instantToWall(currentInstant(), zone).slice(0, 10);
+    setWall(`${date}T${e.target.value.slice(0, 5)}`, zone);
+    update();
+  } else if (e.target.id === "dateInput") {
+    if (!e.target.value) return;
+    setWall(`${e.target.value}T${instantToWall(currentInstant(), zone).slice(11)}`, zone);
+    update();
   }
 });
+// Once the time field is left, show the settled value (e.g. after a skipped DST hour).
+app.addEventListener("focusout", (e) => { if (e.target.classList.contains("timein")) setTimeout(update, 0); });
 
 // ---------- Add sheet ----------
 
-const sheet = document.getElementById("sheet"), results = document.getElementById("results"), q = document.getElementById("q");
+const results = document.getElementById("results"), q = document.getElementById("q");
 
 function entryRow(e) {
   const added = state.places.some((p) => p.name === e.name && p.zoneID === e.zoneID);
@@ -346,11 +511,9 @@ setInterval(() => {
   const minute = Math.floor(Date.now() / 60000);
   if (minute === lastMinute) return;
   lastMinute = minute;
-  // Don't redraw underneath an open picker or the add sheet.
-  const busy = document.body.classList.contains("sheet-open") || ["wall", "source"].includes(document.activeElement && document.activeElement.id);
-  if (state.mode === "now" && !busy) render();
+  if (state.live && !document.body.classList.contains("sheet-open")) update();
 }, 1000);
-document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) update(); });
 
 render();
 
