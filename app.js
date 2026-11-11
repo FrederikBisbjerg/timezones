@@ -189,7 +189,7 @@ const state = {
   instant: Date.now(),  // the chosen moment, used when not live
   anchorKey: LOCAL,     // the row whose clock the slider and date move
   clock: loadClock(),   // "auto" | "12" | "24"
-  editing: false,
+  openKey: null,       // the row currently swiped open, if any
   hintDismissed: false,
 };
 
@@ -226,64 +226,55 @@ function isIOS() {
 }
 
 function rowHTML(r, index) {
-  const editing = state.editing && !r.mine;
   const i = index - 1; // index into state.places
   const isAnchor = r.key === anchorRow().key;
   const time = isAnchor
     ? `<input class="time timein" type="time" step="60" aria-label="Time in ${esc(r.name)}">`
     : `<button class="time" data-act="settime" aria-label="Set the time in ${esc(r.name)}"></button>`;
-  return `<div class="row zone${isAnchor ? " anchor" : ""}" data-key="${esc(r.key)}" data-act="anchor">
-    ${editing ? `<button class="del" data-act="delete" data-i="${i}" aria-label="Remove ${esc(r.name)}">−</button>` : ""}
+  const row = `<div class="row zone${isAnchor ? " anchor" : ""}" data-key="${esc(r.key)}" data-act="anchor">
     <span class="part" role="img"></span>
     <div class="grow"><div class="name">${esc(r.name)}</div><div class="sub"></div></div>
     <div class="right">${time}<div class="day"></div></div>
-    ${editing ? `<div class="move">
-      <button data-act="up" data-i="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(r.name)} up">▲</button>
-      <button data-act="down" data-i="${i}" ${i === state.places.length - 1 ? "disabled" : ""} aria-label="Move ${esc(r.name)} down">▼</button>
-    </div>` : ""}
   </div>`;
+  if (r.mine) return `<div class="swipe">${row}</div>`;
+  // Swiping a saved place left reveals these, as in iOS lists.
+  return `<div class="swipe" data-swipe data-key="${esc(r.key)}">
+    <div class="actions">
+      <button class="act" data-act="up" data-i="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(r.name)} up">▲</button>
+      <button class="act" data-act="down" data-i="${i}" ${i === state.places.length - 1 ? "disabled" : ""} aria-label="Move ${esc(r.name)} down">▼</button>
+      <button class="act danger" data-act="delete" data-i="${i}" aria-label="Remove ${esc(r.name)}">Delete</button>
+    </div>${row}</div>`;
 }
 
 function render() {
   const rows = allRows();
   if (!rows.some((r) => r.key === state.anchorKey)) state.anchorKey = LOCAL;
-  const editing = state.editing && state.places.length > 0;
   const h24 = uses24h();
   const ticks = h24 ? ["00", "06", "12", "18", "24"] : ["12 AM", "6 AM", "12 PM", "6 PM", "12 AM"];
 
-  let html = `<div class="bar">
-      ${state.places.length ? `<button class="pill${editing ? " done" : ""}" data-act="edit">${editing ? "Done" : "Edit"}</button>` : "<span></span>"}
-      <button class="pill icon" data-act="add" aria-label="Add time zone or city">+</button>
-    </div>
-    <h1>Time Zones</h1>
-
+  let html = `<h1>Time Zones</h1>
     <div class="card picker">
       <div class="pickhead">
-        <div class="grow"><div class="caption" id="anchorLabel"></div>
-          <div class="datestep">
-            <button class="step" data-act="day" data-d="-1" aria-label="Previous day">‹</button>
-            <button class="date" data-act="date" id="dateLabel" aria-label="Choose a date"></button>
-            <button class="step" data-act="day" data-d="1" aria-label="Next day">›</button>
-            <input type="date" id="dateInput" tabindex="-1" aria-hidden="true">
-          </div>
+        <div class="datestep">
+          <button class="step" data-act="day" data-d="-1" aria-label="Previous day">‹</button>
+          <button class="date" data-act="date" id="dateLabel" aria-label="Choose a date"></button>
+          <button class="step" data-act="day" data-d="1" aria-label="Next day">›</button>
+          <input type="date" id="dateInput" tabindex="-1" aria-hidden="true">
         </div>
         <button class="now" data-act="now" id="nowBtn"></button>
       </div>
       <input class="slider" id="slider" type="range" min="0" max="${1440 - STEP}" step="${STEP}" aria-label="Time of day">
       <div class="ticks">${ticks.map((t) => `<span>${t}</span>`).join("")}</div>
+      <div class="caption" id="anchorLabel"></div>
     </div>
 
-    <div class="label">Your time zone</div>
-    <div class="card">${rowHTML(rows[0], 0)}</div>
-    <div class="label">Other time zones</div>
-    <div class="card">${rows.slice(1).map((r, n) => rowHTML(r, n + 1)).join("")}
+    <div class="card list">${rows.map((r, n) => rowHTML(r, n)).join("")}
       <button class="row link add" data-act="add"><span class="plus">+</span>Add time zone or city</button>
     </div>
 
-    <div class="legend"><span><i class="part work"></i>Working hours</span><span><i class="part edge"></i>Early or late</span><span><i class="part night"></i>Night</span></div>
-
     <button class="share" data-act="share">Share these times</button>
-    <button class="link small" data-act="clock">${h24 ? "Use 12-hour time" : "Use 24-hour time"}</button>`;
+    <div class="legend"><span><i class="part work"></i>Working hours</span><span><i class="part edge"></i>Early or late</span><span><i class="part night"></i>Night</span></div>
+    <div class="foot">${state.places.length ? "Swipe a city left to move or remove it. " : ""}<button class="link" data-act="clock">${h24 ? "Use 12-hour time" : "Use 24-hour time"}</button></div>`;
 
   if (!isStandalone() && !state.hintDismissed) {
     const how = isIOS()
@@ -292,8 +283,10 @@ function render() {
     html += `<div class="hint"><span class="grow">To use this like an app, ${how}.</span>
       <button data-act="hint" aria-label="Dismiss">×</button></div>`;
   }
-  app.classList.toggle("editing", editing);
   app.innerHTML = html;
+  // Keep a swiped-open row open across a redraw (e.g. after moving it up or down).
+  const open = state.openKey && app.querySelector(`.swipe[data-key="${CSS.escape(state.openKey)}"]`);
+  if (open) { open.classList.add("open"); setOffset(open, -ACTIONS_W, false); } else { state.openKey = null; }
   update();
 }
 
@@ -304,7 +297,7 @@ function update(fromSlider = false) {
   const local = rows[0];
   const anchorParts = partsIn(t, anchor.zone);
 
-  $("#anchorLabel").textContent = `Time in ${anchor.name}`;
+  $("#anchorLabel").textContent = `Slider sets the time in ${anchor.name}`;
   $("#dateLabel").textContent = dayText(t, anchor.zone);
   $("#dateInput").value = instantToWall(t, anchor.zone).slice(0, 10);
   const now = $("#nowBtn");
@@ -319,7 +312,7 @@ function update(fromSlider = false) {
     const el = app.querySelector(`.zone[data-key="${CSS.escape(r.key)}"]`);
     if (!el) continue;
     const gmt = gmtLabel(t, r.zone);
-    $(".sub", el).textContent = r.mine ? gmt : `${gmt} · ${differenceLabel(t, r.zone, local.zone, "you")}`;
+    $(".sub", el).textContent = r.mine ? `${gmt} · your time zone` : `${gmt} · ${differenceLabel(t, r.zone, local.zone, "you")}`;
     const time = $(".time", el);
     if (time.tagName === "INPUT") {
       if (document.activeElement !== time) time.value = instantToWall(t, r.zone).slice(11);
@@ -398,10 +391,68 @@ async function share() {
   }
 }
 
+// ---------- Swipe to move or remove ----------
+
+const ACTIONS_W = 176;
+let swipe = null, suppressClick = false;
+
+function setOffset(el, x, animate) {
+  const row = $(".zone", el);
+  row.style.transition = animate ? "transform .2s ease" : "none";
+  row.style.transform = x ? `translateX(${x}px)` : "";
+}
+function closeSwipes(except = null) {
+  app.querySelectorAll(".swipe.open").forEach((el) => {
+    if (el !== except) { el.classList.remove("open"); setOffset(el, 0, true); }
+  });
+  if (!except) state.openKey = null;
+}
+
+app.addEventListener("pointerdown", (e) => {
+  suppressClick = false; // a new touch always starts clean
+  if (e.target.closest(".actions")) return;
+  const el = e.target.closest(".swipe[data-swipe]");
+  closeSwipes(el && el.classList.contains("open") ? el : null);
+  if (!el || e.target.closest("input")) return;
+  const open = el.classList.contains("open");
+  swipe = { el, id: e.pointerId, x: e.clientX, y: e.clientY, start: open ? -ACTIONS_W : 0, last: open ? -ACTIONS_W : 0, active: false };
+});
+app.addEventListener("pointermove", (e) => {
+  if (!swipe || e.pointerId !== swipe.id) return;
+  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+  if (!swipe.active) {
+    if (Math.abs(dx) < 10) return;
+    if (Math.abs(dy) > Math.abs(dx)) { swipe = null; return; } // a vertical scroll, not a swipe
+    swipe.active = true;
+    swipe.el.classList.add("dragging");
+    try { swipe.el.setPointerCapture(e.pointerId); } catch { /* fine without capture */ }
+  }
+  swipe.last = Math.max(-ACTIONS_W - 24, Math.min(0, swipe.start + dx));
+  setOffset(swipe.el, swipe.last, false);
+});
+function endSwipe(e) {
+  if (!swipe || (e.pointerId !== undefined && e.pointerId !== swipe.id)) return;
+  const s = swipe;
+  swipe = null;
+  if (!s.active) return;
+  s.el.classList.remove("dragging");
+  suppressClick = true;
+  setTimeout(() => { suppressClick = false; }, 350);
+  const open = s.start === 0 ? s.last < -50 : s.last < -ACTIONS_W + 50;
+  s.el.classList.toggle("open", open);
+  setOffset(s.el, open ? -ACTIONS_W : 0, true);
+  state.openKey = open ? s.el.dataset.key : null;
+}
+app.addEventListener("pointerup", endSwipe);
+app.addEventListener("pointercancel", endSwipe);
+
 app.addEventListener("click", (e) => {
+  if (suppressClick) { e.preventDefault(); return; }
   const el = e.target.closest("[data-act]");
   if (!el) return;
   const i = Number(el.dataset.i);
+  // Tapping a swiped-open row just closes it.
+  if (!e.target.closest(".actions") && e.target.closest(".swipe.open")) { closeSwipes(); return; }
   switch (el.dataset.act) {
     case "anchor":
       if (e.target.closest("input")) return;
@@ -421,11 +472,10 @@ app.addEventListener("click", (e) => {
       state.clock = uses24h() ? "12" : "24";
       save(CLOCK_KEY, state.clock);
       break;
-    case "edit": state.editing = !state.editing; break;
     case "delete":
       if (placeId(state.places[i]) === state.anchorKey) state.anchorKey = LOCAL;
       state.places.splice(i, 1); savePlaces();
-      if (!state.places.length) state.editing = false;
+      state.openKey = null;
       break;
     case "up": if (i > 0) { state.places.splice(i - 1, 0, state.places.splice(i, 1)[0]); savePlaces(); } break;
     case "down": if (i < state.places.length - 1) { state.places.splice(i + 1, 0, state.places.splice(i, 1)[0]); savePlaces(); } break;
